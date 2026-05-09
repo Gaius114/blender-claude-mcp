@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "blender": {
+      "command": "python",
+      "args": ["-u", "C:/path/to/blender_mcp_http.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "BLENDER_URL": "http://localhost:7234"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+*.blend
+*.blend1
+*.png
+*.mp4
+docs/banner.png
