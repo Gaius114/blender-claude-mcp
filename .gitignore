@@ -1,4 +1,4 @@
-# Renders (PNG files — too large for git)
+# Renders (PNG output — too large for git)
 renders/
 
 # Python cache
@@ -6,6 +6,13 @@ __pycache__/
 *.pyc
 *.pyo
 
+# OS
+.DS_Store
+Thumbs.db
+
 # Blender temp files
 *.blend1
 *.blend2
+*.mp4
+
+# Keep docs/banner.png (tracked explicitly if needed)
