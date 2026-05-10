@@ -1,0 +1,11 @@
+# Renders (PNG files — too large for git)
+renders/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Blender temp files
+*.blend1
+*.blend2
