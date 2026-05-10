@@ -1,10 +1,12 @@
 ---
 description: >
   Skill di geometria 3D e orientamento spaziale per Blender. Coordinate systems,
-  transform math, bounding box precisi, posizionamento oggetti, debug spaziale.
-  Usa questa skill ogni volta che devi: posizionare oggetti con precisione,
-  calcolare distanze/angoli, capire dove sono i vertici nel mondo, gestire
-  parent-child, orientare la camera, lavorare con rotazioni.
+  transform math, bounding box precisi, posizionamento oggetti, debug spaziale,
+  normali in world space, KDTree proximity queries, falloff functions, sculpt brush
+  procedurale. Usa questa skill ogni volta che devi: posizionare oggetti con
+  precisione, calcolare distanze/angoli, capire dove sono i vertici nel mondo,
+  gestire parent-child, orientare la camera, lavorare con rotazioni, fare sculpting
+  o deformazioni programmatiche con brush influence.
 allowed-tools:
   - Bash
   - PowerShell
@@ -564,6 +566,251 @@ normalize_origins(["Apple", "Pear", "Banana", "Pineapple"])
 
 ---
 
+## NORMALI IN WORLD SPACE
+
+Le normali **non** si trasformano con `matrix_world` — serve la **normal matrix** (transposta dell'inversa).
+
+```python
+from mathutils import Vector
+
+# ── PERCHÉ NON matrix_world? ────────────────────────────────────
+# Se l'oggetto ha scala non uniforme (es. scale=(2, 1, 1)),
+# matrix_world distorce le normali. La normal matrix corregge.
+
+def normal_matrix(obj):
+    """Normal matrix = M^{-T} (inversa trasposta della parte 3x3)."""
+    return obj.matrix_world.inverted().transposed().to_3x3()
+
+# ── NORMALI DEI VERTICI IN WORLD SPACE ──────────────────────────
+def vertex_normals_world(obj):
+    """Restituisce lista di (world_pos, world_normal) per ogni vertice."""
+    mw  = obj.matrix_world
+    nm  = normal_matrix(obj)
+    return [
+        (mw @ v.co, (nm @ v.normal).normalized())
+        for v in obj.data.vertices
+    ]
+
+# ── NORMALI DELLE FACCE IN WORLD SPACE ──────────────────────────
+def face_normals_world(obj):
+    """Restituisce lista di (world_center, world_normal) per ogni faccia."""
+    mw  = obj.matrix_world
+    nm  = normal_matrix(obj)
+    return [
+        (mw @ poly.center, (nm @ poly.normal).normalized())
+        for poly in obj.data.polygons
+    ]
+
+# ── AGGIORNARE LE NORMALI DOPO MODIFICA ─────────────────────────
+# Dopo aver spostato vertici programmaticamente, aggiorna:
+obj.data.update()                           # ricalcola normali
+# oppure in edit mode:
+# bpy.ops.mesh.normals_make_consistent()
+
+# ── DEBUG: visualizza normali come frecce ────────────────────────
+# Utile per verificare orientamento prima di sculpting
+"""
+for obj in bpy.data.objects:
+    if obj.type == 'MESH':
+        obj.data.show_normal_vertex = True
+        obj.data.show_normal_face = True
+        obj.data.normal_length = 0.02
+"""
+```
+
+---
+
+## KDTREE — PROXIMITY QUERIES
+
+Per trovare vertici vicini a un punto in **O(log n)** invece di O(n).
+
+```python
+from mathutils.kdtree import KDTree
+
+# ── COSTRUZIONE ──────────────────────────────────────────────────
+def build_kdtree(obj):
+    """KDTree dai vertici dell'oggetto in world space."""
+    mw          = obj.matrix_world
+    verts_world = [mw @ v.co for v in obj.data.vertices]
+    kd = KDTree(len(verts_world))
+    for i, v in enumerate(verts_world):
+        kd.insert(v, i)
+    kd.balance()   # OBBLIGATORIO prima di usare find*
+    return kd, verts_world
+
+# ── QUERIES ──────────────────────────────────────────────────────
+kd, verts_world = build_kdtree(obj)
+
+# Il vertice più vicino a un punto
+pos, idx, dist = kd.find((0.0, 0.0, 0.2))
+
+# I 5 vertici più vicini
+nearest_5 = kd.find_n((0.0, 0.0, 0.2), 5)
+# → lista di (pos, index, dist)
+
+# TUTTI i vertici entro raggio r (usato per brush sculpt)
+in_range = kd.find_range((0.0, 0.0, 0.2), 0.05)
+# → lista di (pos, index, dist)
+
+# ── HELPER per brush ─────────────────────────────────────────────
+def brush_vertices(obj, brush_center, brush_radius):
+    """
+    Indici e distanze dei vertici nel raggio del brush.
+    Ritorna: [(vertex_index, distance), ...]
+    """
+    kd, _ = build_kdtree(obj)
+    return [(idx, dist) for (pos, idx, dist) in kd.find_range(brush_center, brush_radius)]
+
+# ── KDTree DA PIÙ OGGETTI (collision check) ───────────────────────
+def build_scene_kdtree(objects):
+    """KDTree globale da più oggetti. idx = (obj_idx, vert_idx)."""
+    all_verts = []
+    for oi, obj in enumerate(objects):
+        mw = obj.matrix_world
+        for vi, v in enumerate(obj.data.vertices):
+            all_verts.append(((oi, vi), mw @ v.co))
+    kd = KDTree(len(all_verts))
+    for i, (key, pos) in enumerate(all_verts):
+        kd.insert(pos, i)
+    kd.balance()
+    return kd, [item[0] for item in all_verts]
+```
+
+---
+
+## FALLOFF — FUNZIONI DI INFLUENZA
+
+Dato `dist` (distanza dal centro brush) e `radius`, restituisce un peso `∈ [0,1]`.
+`weight=1` → vertice al centro, massima influenza. `weight=0` → oltre il bordo.
+
+```python
+import math
+
+def falloff_smooth(dist, radius):
+    """Smooth (Blender default) — curva a S, transizione naturale."""
+    t = min(dist / radius, 1.0)
+    return 1.0 - (3*t*t - 2*t*t*t)       # smoothstep
+
+def falloff_sphere(dist, radius):
+    """Sphere — decadimento sferico, classico per inflate/deflate."""
+    t = min(dist / radius, 1.0)
+    return math.sqrt(max(0.0, 1.0 - t*t))
+
+def falloff_linear(dist, radius):
+    """Linear — influenza proporzionale alla distanza."""
+    return max(0.0, 1.0 - dist / radius)
+
+def falloff_sharp(dist, radius):
+    """Sharp — influenza concentrata vicino al centro."""
+    t = min(dist / radius, 1.0)
+    return (1.0 - t) ** 3
+
+def falloff_gaussian(dist, radius, sigma=0.35):
+    """Gaussian — bordo morbidissimo, ideale per blend sottili."""
+    t = dist / radius
+    return math.exp(-(t * t) / (2 * sigma * sigma))
+
+def falloff_constant(dist, radius):
+    """Constant (Blender 'flat') — tutti i vertici nel raggio = stesso peso."""
+    return 1.0 if dist <= radius else 0.0
+
+# ── TABELLA COMPARATIVA ──────────────────────────────────────────
+# falloff_smooth   → bordo sfumato, forma a campana piatta  ████▄▄
+# falloff_sphere   → cade più veloce verso il bordo        ████▃▁
+# falloff_linear   → cade uniformemente                    ████▂▁
+# falloff_sharp    → molto concentrato al centro           ██▂▁▁▁
+# falloff_gaussian → bordo quasi impercettibile            █████▃
+# falloff_constant → taglio netto al bordo                 █████▁
+
+FALLOFFS = {
+    'smooth':   falloff_smooth,
+    'sphere':   falloff_sphere,
+    'linear':   falloff_linear,
+    'sharp':    falloff_sharp,
+    'gaussian': falloff_gaussian,
+    'constant': falloff_constant,
+}
+```
+
+---
+
+## SCULPT BRUSH PROCEDURALE
+
+Combinazione di Normali + KDTree + Falloff = brush sculpt completo.
+
+```python
+def sculpt_brush(obj, brush_center, brush_radius, strength=0.01,
+                 direction='normal', falloff='smooth'):
+    """
+    Sposta i vertici nel raggio del brush.
+
+    brush_center : (x, y, z) in WORLD SPACE — centro del pennello
+    brush_radius : float — raggio di influenza in world units
+    strength     : float — intensità (positivo = gonfia/alza, negativo = sgonfia/abbassa)
+    direction    : 'normal'  → lungo la normale del vertice (inflate)
+                   'z'       → puro asse Z (flatten/raise)
+                   (x, y, z) → direzione world personalizzata
+    falloff      : 'smooth' | 'sphere' | 'linear' | 'sharp' | 'gaussian' | 'constant'
+    """
+    mw      = obj.matrix_world
+    mw_inv  = mw.inverted()
+    nm      = mw.inverted().transposed().to_3x3()   # normal matrix
+    fn      = FALLOFFS.get(falloff, falloff_smooth)
+
+    nearby = brush_vertices(obj, brush_center, brush_radius)
+    if not nearby:
+        return 0   # nessun vertice nel raggio
+
+    for vi, dist in nearby:
+        v      = obj.data.vertices[vi]
+        weight = fn(dist, brush_radius)
+
+        if direction == 'normal':
+            disp_world = (nm @ v.normal).normalized() * strength * weight
+        elif direction == 'z':
+            disp_world = Vector((0, 0, strength * weight))
+        else:
+            disp_world = Vector(direction).normalized() * strength * weight
+
+        # Spostamento in LOCAL space (dove vivono v.co)
+        v.co += mw_inv.to_3x3() @ disp_world
+
+    obj.data.update()   # ricalcola normali
+    return len(nearby)
+
+# ── ESEMPI D'USO ─────────────────────────────────────────────────
+
+# 1. Gonfia una sfera in un punto (inflate)
+# n = sculpt_brush(sphere, brush_center=(0, 0, 0.5), brush_radius=0.1, strength=0.02)
+
+# 2. Abbassa la superficie (deflate)
+# sculpt_brush(obj, center, 0.08, strength=-0.015, direction='normal')
+
+# 3. Alza in puro Z (flatten raise)
+# sculpt_brush(obj, center, 0.12, strength=0.01, direction='z', falloff='constant')
+
+# 4. Graffio direzionale personalizzato
+# sculpt_brush(obj, center, 0.05, strength=0.03, direction=(1, 0, 0.5))
+
+# ── MULTI-PASS (simula pennellata continua) ───────────────────────
+def paint_stroke(obj, points, radius, strength=0.01, **kwargs):
+    """
+    Applica il brush lungo una lista di punti (simulazione drag).
+    points: lista di (x, y, z) world space
+    """
+    total = 0
+    for pt in points:
+        total += sculpt_brush(obj, pt, radius, strength, **kwargs)
+    return total
+
+# Stroke diagonale in 10 passi
+# import numpy as np
+# stroke = [(t*0.3, 0, 0.2) for t in np.linspace(0, 1, 10)]
+# paint_stroke(sphere, stroke, radius=0.05, strength=0.015)
+```
+
+---
+
 ## CHEATSHEET — FORMULE RAPIDE
 
 | Cosa vuoi sapere | Codice |
@@ -577,6 +824,12 @@ normalize_origins(["Apple", "Pear", "Banana", "Pineapple"])
 | Orienta verso punto | `obj.rotation_euler = (Vector(target)-obj.location).to_track_quat('-Z','Y').to_euler()` |
 | Applica scala | `bpy.ops.object.transform_apply(scale=True)` |
 | Resetta tutto | `obj.location=(0,0,0); obj.rotation_euler=(0,0,0); obj.scale=(1,1,1)` |
+| Normale vertice in world | `(obj.matrix_world.inverted().transposed().to_3x3() @ v.normal).normalized()` |
+| Normale faccia in world | `(obj.matrix_world.inverted().transposed().to_3x3() @ poly.normal).normalized()` |
+| Vertici entro raggio r | `KDTree(...).find_range(center, r)` → `[(pos, idx, dist)]` |
+| Vertice più vicino | `KDTree(...).find(point)` → `(pos, idx, dist)` |
+| Brush smooth weight | `1.0 - (3*t*t - 2*t*t*t)` dove `t = dist/radius` |
+| Aggiorna mesh dopo edit | `obj.data.update()` |
 
 ---
 
@@ -589,3 +842,6 @@ normalize_origins(["Apple", "Pear", "Banana", "Pineapple"])
 5. **`dimensions.z`** funziona solo se `scale=(1,1,1)`, altrimenti usa vertices
 6. **Parent chain** — `matrix_world` include tutti i parent, `matrix_local` no
 7. **Euler ha gimbal lock** — usa quaternion per rotazioni complesse (>90° multi-asse)
+8. **Le normali NON si trasformano con `matrix_world`** — usa la normal matrix `M^{-T}` (inversa trasposta)
+9. **KDTree per proximity** — brute force O(n) per ogni brush stroke è proibitivo; `build_kdtree()` una volta, poi `find_range()` O(log n)
+10. **Sempre `obj.data.update()` dopo edit vertici** — senza, le normali restano vecchie e il rendering è sbagliato
