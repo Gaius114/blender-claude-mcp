@@ -3,9 +3,11 @@ description: >
   Coordinator per la pipeline di modellazione 3D in Blender. Riceve la richiesta
   dell'utente, decide se serve ricerca (blender-research), analizza lo spec_sheet,
   sceglie la tecnica di modellazione per ogni parte, pianifica le dipendenze e
-  l'ordine di costruzione, poi orchestra blender-arch. È il "project manager" della
-  pipeline: blender-research → coordinator → blender-arch.
-  Trigger: qualsiasi richiesta di creazione di oggetti 3D ("voglio creare X").
+  l'ordine di costruzione, poi orchestra blender-arch, blender-procedural,
+  blender-rig, blender-sculpt, blender-geonodes, blender-texture, blender-lighting e blender-physics
+  secondo il tipo di geometria e le esigenze di render.
+  Pipeline completa: research → coordinator → arch / procedural / rig / sculpt / geonodes / texture / lighting / physics.
+  Trigger: qualsiasi richiesta di creazione di oggetti 3D ("voglio creare X") o di setup render/luce/camera.
 allowed-tools:
   - Bash
   - Read
@@ -40,8 +42,8 @@ UTENTE: "voglio creare X"
         ├─► STEP 1: analizza spec_sheet
         │     Quante parti? Dipendenze? Complessità?
         │
-        ├─► STEP 2: scegli tecnica per ogni parte
-        │     (vedi tabella TECNICHE DI MODELLAZIONE)
+        ├─► STEP 2: scegli SKILL + tecnica per ogni parte
+        │     (vedi tabella ROUTING SKILL)
         │
         ├─► STEP 3: pianifica dipendenze e ordine
         │     Chi dipende da chi? Cosa va fatto prima?
@@ -50,7 +52,56 @@ UTENTE: "voglio creare X"
         │     Materiali condivisi? Luci appropriate?
         │
         └─► STEP 5: produci build_plan
-              → passa a blender-arch per l'esecuzione
+              → passa alla skill appropriata per l'esecuzione
+```
+
+---
+
+## ROUTING SKILL — Quale skill usare?
+
+| Tipo di geometria / richiesta | Skill da invocare |
+|-------------------------------|-------------------|
+| Oggetti rigidi, architettura, mobili, prodotti | **blender-arch** |
+| Strutture biologiche (cuore, vasi, DNA) | **blender-procedural** |
+| Tubi, cavi, pipe lungo una curva 3D | **blender-procedural** |
+| Eliche, strutture ripetitive su spine | **blender-procedural** |
+| Loft da profili variabili (colonna, vaso anatomico) | **blender-procedural** |
+| Crescita differenziale, superfici organiche | **blender-procedural** |
+| Scheletro / armatura / rig | **blender-rig** |
+| Deformazioni biomeccaniche (nocca, muscolo) | **blender-rig** |
+| Pelle su scheletro, weight painting | **blender-rig** |
+| FK/IK, animazione articolata | **blender-rig** |
+| Forma organica/irregolare (frutta, roccia, terreno) | **blender-sculpt** |
+| Dettagli superficie (rughe, pori, bump, dents) | **blender-sculpt** |
+| Displacement noise su mesh | **blender-sculpt** |
+| Morphing / Shape Key da sculpt | **blender-sculpt** |
+| Posizionamento preciso, attach point | **blender-space** |
+| Materiali, UV unwrap, baking, PBR texture | **blender-texture** |
+| SSS, Fresnel, materiali organici/ceramica/legno | **blender-texture** |
+| Bake AO / Normal Map su immagine | **blender-texture** |
+| Scatter su superficie, istanziazione non-distruttiva | **blender-geonodes** |
+| Curve-to-mesh, pipe via modifier | **blender-geonodes** |
+| Displacement / noise via Geometry Nodes | **blender-geonodes** |
+| Setup luci, camera, render per product shot | **blender-lighting** |
+| Oggetti bianchi/chiari sovraesposti nel render | **blender-lighting** |
+| AgX/Filmic look, color management, exposure | **blender-lighting** |
+| World/background, contrasto soggetto/sfondo | **blender-lighting** |
+| Oggetto che cade / rimbalza senza deformarsi | **blender-physics** (Rigid Body) |
+| Oggetto morbido che si schiaccia / deforma | **blender-physics** (Soft Body) |
+| Pallone / oggetto gonfiabile con deformazione | **blender-physics** (Cloth + Pressure) |
+| Tessuto / vestito / bandiera / tenda | **blender-physics** (Cloth) |
+| Vento / turbolenza su Cloth o Soft Body | **blender-physics** (Force Field) |
+| Pioggia / polvere / particelle / fumo | **blender-physics** (Particles) |
+| Oggetto complesso = parti miste | **più skill in sequenza** |
+
+### Regola di composizione (parti miste):
+```
+Esempio: "mano animata che tiene un oggetto"
+  ├─ geometria mano (skin) → blender-procedural (Generalized Cylinder)
+  ├─ scheletro + deformazioni → blender-rig
+  └─ oggetto tenuto (spada) → blender-arch (product modeling)
+         │
+         └─► Socket System (CHILD_OF) → blender-rig
 ```
 
 ---
@@ -122,7 +173,130 @@ def classifica_forma(shape_str):
 
 ---
 
-## STEP 2 — TECNICHE DI MODELLAZIONE
+## STEP 2 — METHOD SELECTION FRAMEWORK
+
+Prima di scegliere la tecnica, esegui questo decision tree per ogni parte:
+
+```
+Parte da modellare
+        │
+        ▼
+Ha una SPINE (asse principale lungo cui scorre la geometria)?
+        │
+       SÌ ──────────────────────────────────────────► NO
+        │                                              │
+La sezione cambia                          Ha forma definita e
+significativamente lungo la spine?          parametrizzabile?
+   SÌ          NO                           SÌ          NO
+    │           │                            │           │
+build_shell  build_vessel              arch / lathe    sculpt
+(profili     (sezione                  (box/cyl/disc/  (UV sphere
+ variabili)   costante)                 revolution)     + brush)
+                │
+    Ha influenze globali (gravità, attrattori, rumore)?
+        SÌ  → vector_blend + tropismo / noise (Sez. 10)
+        NO, ha waypoint + cambi direzione discreti?
+        SÌ  → state_machine + fillet (Sez. 11)
+    Ha biforcazioni / topologia complessa?
+        SÌ  → grafo + cinematica ibrida (Sez. 12-13)
+```
+
+### Tabella diagnostica rapida
+
+| Segnale diagnostico | Tecnica primaria | Skill |
+|--------------------|-----------------|-------|
+| Simmetria di rivoluzione (tazza, vaso) | LATHE / bmesh rings | arch |
+| Sezione costante su percorso (tubo, cavo) | build_vessel | procedural |
+| Sezione variabile su percorso (cuore, osso) | build_shell | procedural |
+| Spine + influenza globale (vite rampicante) | vector_blend_step | procedural |
+| Spine + waypoint discreti (bambù, tubatura) | state_machine + fillet | procedural |
+| Biforcazioni / albero vascolare | grafo (MST) + build_vessel | procedural |
+| Box/cylinder/cone con modificatori | CUBE/CYL + bevel/boolean | arch |
+| Forma libera senza asse (frutta, roccia) | UV_SPHERE + sculpt | sculpt |
+| Ripetizione su superficie | scatter / array | geonodes |
+| Deformazione animata | armature + skin | rig |
+
+### Priorità in caso di ambiguità
+
+```
+1. Spine presente?         → procedural batte arch
+2. Animazione richiesta?   → rig batte tutto il resto
+3. Forma organica pura?    → sculpt batte arch
+4. Scatter/ripetizione?    → geonodes batte arch (array)
+5. Default (forma rigida)  → arch
+```
+
+---
+
+## STEP 2b — FALLBACK CHAINS
+
+Quando il metodo primario produce artefatti, segui questa catena prima di ricominciare da zero:
+
+```python
+FALLBACK_CHAINS = {
+
+    "LATHE / bmesh_rings": [
+        # Artefatto               Fix
+        ("topologia sporca ai poli",  "aggiungi ring intermedio vicino all'apice"),
+        ("shade stripes su cilindro", "usa obj.data.shade_smooth() NON ops.shade_smooth"),
+        ("boolean fallisce",          "subdivide PRIMA del boolean, solver='EXACT'"),
+        ("pareti troppo sottili",     "aumenta segments o aggiungi loop_cuts manuali"),
+        # Fallback totale: LATHE → build_shell (più controllo sui profili)
+    ],
+
+    "build_vessel": [
+        ("frame flippa 180°",         "reortho(T, N) ogni 10-20 passi"),
+        ("mesh non chiusa alle capi", "aggiungi cap: bm.faces.new(ring_end)"),
+        ("sezione deformata",         "riduci step_distance o aumenta segments"),
+        ("self-intersection su curva stretta", "riduci radius o aumenta n_steps"),
+        # Fallback totale: build_vessel → geonodes curve-to-mesh (più flessibile sui cap)
+    ],
+
+    "build_shell": [
+        ("profili non allineati tra ring",  "verifica ordine CCW di tutti i ring"),
+        ("facce invertite",                 "bm.normal_update() dopo ogni loft_rings"),
+        ("transizione brusca tra sezioni",  "interpola frame intermedi con lerp"),
+        # Fallback totale: build_shell → sculpt su UV_SPHERE (se forma troppo complessa)
+    ],
+
+    "sculpt": [
+        ("troppo coarse",        "remesh voxel 0.003-0.005 prima di sculptare"),
+        ("normali invertite",    "Recalculate Outside in Edit Mode"),
+        ("no UV per texture",    "smart_uv_project() dopo sculpt"),
+        # Fallback totale: sculpt → procedural con più rings (se serve parametrizzabilità)
+    ],
+
+    "state_machine + fillet": [
+        ("spigolo vivo al cambio",    "aumenta fillet_steps (1 → 8)"),
+        ("self-intersection al raccordo", "riduci step_size × fillet_steps"),
+        ("direzioni non allineate",   "usa rotation_difference() non angoli Euler"),
+        # Fallback totale: state_machine → vector_blend (se i cambi sono fluidi non discreti)
+    ],
+
+    "boolean": [
+        ("mesh non manifold dopo cut",  "valida con obj.data.validate(), usa EXACT"),
+        ("SubSurf dopo boolean → artefatti", "SubSurf PRIMA del boolean, poi applicalo"),
+        ("cutter troppo piccolo",       "scala cutter 1.01x sull'asse di taglio"),
+        # Fallback totale: boolean → displacement/sculpt (per dettagli non critici)
+    ],
+}
+```
+
+### Regola generale di fallback
+
+```
+Se il metodo A fallisce dopo 2 tentativi di fix:
+  1. Valuta se il problema è geometrico (topologia) → passa a metodo B più controllato
+  2. Valuta se il problema è di scala → verifica UNIT = 0.1, converti tutto in BU
+  3. Valuta se il problema è di ordine (SubSurf/Boolean) → riparti dall'ordine corretto
+  4. Solo dopo: passa alla tecnica alternativa
+
+Mai: eliminare la mesh e rifare senza diagnosticare l'artefatto.
+```
+
+---
+
+## STEP 2c — TECNICHE DI MODELLAZIONE
 
 Per ogni parte, scegli la tecnica più appropriata:
 
@@ -189,6 +363,112 @@ r_dep   = ring(bm, IR, z_top - depth)
 bridge(bm, r_outer, r_inner)   # piano
 bridge(bm, r_inner, r_dep)     # parete depressione
 """
+```
+
+---
+
+## FILOSOFIA MODULARE — Le 3 Fasi Separate
+
+Ogni oggetto complesso va costruito in **3 fasi distinte e non mescolate**.
+Mescolare le fasi è la causa più comune di bug di posizionamento e materiali duplicati.
+
+```
+FASE 1 — BUILD (ogni modulo costruisce se stesso)
+    ├─ input:  spec dimensionali + tecnica
+    ├─ output: oggetto nominato, origin al bottom, socket_dict
+    └─ regola: nessuna dipendenza da altri oggetti ancora
+
+FASE 2 — ASSEMBLY (il coordinator posiziona i moduli)
+    ├─ input:  lista oggetti + socket_dict di ognuno
+    ├─ output: scena con tutti gli oggetti posizionati
+    └─ regola: usa attach_to() / attach_bounds(), mai location dirette
+
+FASE 3 — MATERIAL (materiali applicati dopo l'assembly)
+    ├─ input:  gruppi di materiali + lista oggetti per gruppo
+    ├─ output: tutti gli slot materiale assegnati
+    └─ regola: un materiale condiviso per gruppo → nessun duplicato
+```
+
+### Interfaccia standard di ogni modulo (socket_dict)
+
+Ogni modulo deve restituire un dizionario di socket — punti di attacco in coordinate **locali** dell'oggetto. Il coordinator usa questi socket nella fase di assembly senza dover conoscere l'implementazione interna del modulo.
+
+```python
+# Convenzione: ogni funzione build_* ritorna (obj, socket_dict)
+# socket_dict: nome_socket → (x, y, z) in coordinate locali dell'oggetto
+
+# Esempio: tazza espresso
+def build_cup_body(spec) -> tuple[bpy.types.Object, dict]:
+    # ... costruzione ...
+    socket_dict = {
+        "handle_top":    (top_r, 0, attach_top_z),   # dove si attacca il manico in alto
+        "handle_bottom": (top_r, 0, attach_bot_z),   # dove si attacca il manico in basso
+        "saucer_center": (0, 0, 0),                   # centro del fondo (contatto piattino)
+        "rim_center":    (0, 0, height),              # centro del bordo superiore
+    }
+    return obj, socket_dict
+
+def build_handle(spec) -> tuple[bpy.types.Object, dict]:
+    socket_dict = {
+        "attach_top":    (0, 0, loop_h / 2),    # punto di attacco superiore
+        "attach_bottom": (0, 0, -loop_h / 2),   # punto di attacco inferiore
+    }
+    return obj, socket_dict
+
+# FASE 2 — Assembly: il coordinator usa i socket
+body_obj, body_sockets   = build_cup_body(spec["body"])
+handle_obj, handle_sockets = build_handle(spec["handle"])
+
+# Attacca handle.attach_top al body.handle_top
+attach_to(handle_obj, handle_sockets["attach_top"],
+          body_obj,   body_sockets["handle_top"])
+# Attacca anche handle.attach_bottom al body.handle_bottom
+attach_to(handle_obj, handle_sockets["attach_bottom"],
+          body_obj,   body_sockets["handle_bottom"])
+```
+
+### Convenzioni di naming e origin
+
+```python
+NAMING_CONVENTION = {
+    # Nome oggetto: PascalCase, parte_di_cosa
+    "body":   "Cup_Body",
+    "handle": "Cup_Handle",
+    "saucer": "Cup_Saucer",
+}
+
+ORIGIN_CONVENTION = {
+    # Tutti gli oggetti: origin al bounding-box BOTTOM
+    # → z=0 nel frame locale = il punto più basso dell'oggetto
+    # → semplifica safe_place(obj, 0, 0, 0) senza calcoli
+    "regola": "origin sempre al bottom prima di uscire dal modulo",
+    "come":   "bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY') poi correggi a bottom",
+}
+```
+
+### Schema del build_plan modulare
+
+```python
+modular_build_plan = {
+    "fase_1_build": [
+        {"part": "body",   "fn": "build_cup_body",   "spec": {...}},
+        {"part": "handle", "fn": "build_handle",     "spec": {...}},
+        {"part": "saucer", "fn": "build_saucer",     "spec": {...}},
+    ],
+    "fase_2_assembly": [
+        # ogni attach: (obj_b, socket_b, obj_a, socket_a)
+        {"move": "handle", "socket_b": "attach_top",
+         "onto": "body",   "socket_a": "handle_top"},
+        {"move": "handle", "socket_b": "attach_bottom",
+         "onto": "body",   "socket_a": "handle_bottom"},
+        {"move": "saucer", "socket_b": "top_center",
+         "onto": "body",   "socket_a": "saucer_center",
+         "gap": -0.004},   # 4mm dentro la rientranza
+    ],
+    "fase_3_material": [
+        {"material": "Porcelain", "applies_to": ["body", "handle", "saucer"]},
+    ],
+}
 ```
 
 ---
@@ -305,29 +585,110 @@ def raggruppa_materiali(spec_sheet):
 
 ### Template luci per tipo di oggetto:
 
+> **Nota:** tutti i tipi usano AREA (orientata con `to_track_quat('-Z','Y')`).
+> Rapporti: key=100%, fill=12–25%, rim=50–65%. AgX Punchy come default.
+> Per oggetti dark (elettronica, metallo nero) usare preset "dark_product".
+
 ```python
+# Preset di riferimento per blender-lighting (v2 — AgX + add_area())
 LIGHT_PRESETS = {
-    "small_object": {   # tazze, frutti, oggetti da tavolo
-        "key":  {"type":"AREA",  "energy":80,  "size":0.25, "pos":(-0.3,-0.15,0.4)},
-        "fill": {"type":"AREA",  "energy":20,  "size":0.5,  "pos":(0.3, 0.1, 0.2)},
-        "rim":  {"type":"SPOT",  "energy":45,  "size":0.25, "pos":(0.0, 0.3, 0.3)},
+    "small_object": {   # tazze, frutti, oggetti da tavolo (< 30cm)
+        # key=100%, fill=25%, rim=54%
+        "key":  {"type":"AREA", "energy":120, "size":0.30, "pos":(-0.30,-0.15,0.40), "color":(1.00,0.97,0.90)},
+        "fill": {"type":"AREA", "energy": 30, "size":0.80, "pos":( 0.30, 0.10,0.20), "color":(0.87,0.93,1.00)},
+        "rim":  {"type":"AREA", "energy": 65, "size":0.12, "pos":( 0.00, 0.28,0.30), "color":(1.00,0.97,0.90)},
+        "cm":   {"view_transform":"AgX", "look":"AgX - Punchy", "exposure":-0.2},
     },
-    "furniture": {       # sedie, tavoli
-        "key":  {"type":"AREA",  "energy":200, "size":1.0,  "pos":(-1.5,-0.8,2.0)},
-        "fill": {"type":"AREA",  "energy":60,  "size":2.0,  "pos":(1.5, 0.5, 1.0)},
-        "rim":  {"type":"SPOT",  "energy":150, "size":0.5,  "pos":(0.0, 2.0, 1.5)},
+    "small_object_white": {   # porcellana, carta, ceramica chiara
+        # key=100%, fill=20%, rim=40% — dim per non bruciare il bianco
+        "key":  {"type":"AREA", "energy":100, "size":0.45, "pos":(-0.28,-0.14,0.38), "color":(1.00,0.97,0.92)},
+        "fill": {"type":"AREA", "energy": 20, "size":1.00, "pos":( 0.32, 0.12,0.18), "color":(0.88,0.93,1.00)},
+        "rim":  {"type":"AREA", "energy": 40, "size":0.12, "pos":( 0.00, 0.28,0.24), "color":(1.00,0.97,0.90)},
+        "cm":   {"view_transform":"AgX", "look":"AgX - Punchy", "exposure":-0.4},
     },
-    "architectural": {   # stanze, edifici
-        "key":  {"type":"SUN",   "energy":3,               "pos":(5, -5, 8)},
-        "fill": {"type":"AREA",  "energy":500, "size":5.0,  "pos":(-3, 2, 4)},
+    "dark_product": {   # elettronica, metallo nero, plastica dark (30–200cm)
+        # key=100%, fill=12%, rim=62% — alto contrasto, rim aggressivo
+        "key":  {"type":"AREA", "energy":400, "size":0.45, "pos":(-0.80,-0.40,1.20), "color":(1.00,0.97,0.90)},
+        "fill": {"type":"AREA", "energy": 50, "size":1.20, "pos":( 0.80, 0.25,0.60), "color":(0.87,0.93,1.00)},
+        "rim":  {"type":"AREA", "energy":250, "size":0.15, "pos":( 0.00, 1.20,0.80), "color":(1.00,0.97,0.90)},
+        "cm":   {"view_transform":"AgX", "look":"AgX - High Contrast", "exposure": 0.1},
+    },
+    "furniture": {       # sedie, tavoli, lampade (30–200cm)
+        # key=100%, fill=20%, rim=56%
+        "key":  {"type":"AREA", "energy":350, "size":1.00, "pos":(-1.50,-0.80,2.00), "color":(1.00,0.97,0.90)},
+        "fill": {"type":"AREA", "energy": 70, "size":2.50, "pos":( 1.50, 0.50,1.00), "color":(0.87,0.92,1.00)},
+        "rim":  {"type":"AREA", "energy":200, "size":0.40, "pos":( 0.00, 2.00,1.50), "color":(1.00,0.96,0.88)},
+        "cm":   {"view_transform":"AgX", "look":"AgX - Punchy", "exposure":-0.1},
+    },
+    "architectural": {   # stanze, edifici (> 200cm)
+        "key":  {"type":"SUN",  "energy":4.5,              "pos":(5, -5, 8),          "color":(1.00,0.96,0.85)},
+        "fill": {"type":"AREA", "energy":800, "size":8.0,  "pos":(-3, 2, 4),          "color":(0.55,0.75,1.00)},
+        "cm":   {"view_transform":"AgX", "look":"AgX - Base", "exposure": 0.0},
     },
 }
 
 def scegli_preset_luci(spec_sheet):
+    """
+    Seleziona il preset luci in base alla dimensione e al tipo di materiale.
+    Per oggetti dark/elettronica, il coordinator deve passare preset='dark_product'.
+    """
     w = spec_sheet["real_size_cm"]["width"]
-    if w < 30:   return "small_object"
-    if w < 200:  return "furniture"
-    return "architectural"
+    mat_type = spec_sheet.get("dominant_material", "")
+    if w >= 200:
+        return "architectural"
+    if w >= 30:
+        if any(k in mat_type.lower() for k in ["dark","black","metal_dark","plastic_dark","electronic"]):
+            return "dark_product"
+        return "furniture"
+    # < 30 cm
+    if any(k in mat_type.lower() for k in ["white","porcelain","ceramic","paper","light"]):
+        return "small_object_white"
+    return "small_object"
+```
+
+### Tecniche Named — Mapping narrativo/emotivo
+
+> Quando il contesto narrativo è noto, usa la tecnica named invece del preset generico.
+> Tecniche named disponibili in **blender-lighting**: loop, rembrandt, butterfly, split,
+> high_key, low_key, food_side, food_window.
+
+```python
+NAMED_TECHNIQUE_MAP = {
+    # TECNICA       : (funzione blender-lighting,  ratio,    uso tipico)
+    "loop":          ("light_rig_loop",           "2:1",    "product standard, ritratto lifestyle, cibo casual"),
+    "rembrandt":     ("light_rig_rembrandt",      "3:1-4:1","product premium, ritratto carattere, noir leggero"),
+    "butterfly":     ("light_rig_butterfly",      "2:1-2.5","beauty, gioielli, cosmetici, still life simmetrico"),
+    "split":         ("light_rig_split",          "8:1+",   "dark product, thriller, automotive notte"),
+    "high_key":      ("light_rig_high_key",       "1:1",    "pubblicità, lifestyle positivo, cibo fresco"),
+    "low_key":       ("light_rig_low_key",        "8:1+",   "horror, villain, whisky/spirits, lusso scuro"),
+    "food_side":     ("light_rig_food_side",      "2:1",    "cibo editoriale, texture, riviste gastronomia"),
+    "food_window":   ("light_rig_food_window",    "2:1",    "cibo lifestyle, luce naturale da finestra"),
+}
+
+def scegli_tecnica_luci(contesto):
+    """
+    Seleziona la tecnica di illuminazione in base al contesto narrativo.
+    contesto: stringa descrittiva (es. "product premium", "cibo fresco", "villain")
+    """
+    contesto = contesto.lower()
+    if any(k in contesto for k in ["horror","villain","dark","noir","thriller","lusso scuro","whisky","spirits"]):
+        return "low_key"
+    if any(k in contesto for k in ["split","automotive","notte","night"]):
+        return "split"
+    if any(k in contesto for k in ["premium","carattere","drammatic","ritratto"]):
+        return "rembrandt"
+    if any(k in contesto for k in ["beauty","gioielli","cosmet","simmetric"]):
+        return "butterfly"
+    if any(k in contesto for k in ["allegro","fresco","bambini","pubblicità","high key","positivo"]):
+        return "high_key"
+    if any(k in contesto for k in ["cibo","food","piatto","ristorante","editoriale","gastronomia"]):
+        return "food_side"
+    # default
+    return "loop"
+
+# In build_plan: inserire nel campo "scene"
+# "lighting_technique": "loop"   oppure   "lighting_preset": "small_object"
+# Se entrambi presenti, lighting_technique ha priorità.
 ```
 
 ### Template camera:
@@ -385,23 +746,39 @@ build_plan = {
         for part_name in spec_sheet["parts"]
     },
 
-    # ── FASI DI COSTRUZIONE ────────────────────────────────────────
+    # ── FASI DI COSTRUZIONE (Fase 1 — BUILD) ─────────────────────
     "phases": [
         {
             "phase":      1,
             "part":       "nome_parte",
-            "technique":  "UV_SPHERE | CYLINDER | LATHE | CURVE_LOOP | DISC | BOX | SCULPT",
-            "depends_on": [],              # parti da creare prima
-            "position":   {               # come posizionarla
-                "method":   "safe_place | stack_on_top | attach",
-                "anchor":   "bottom | center | top",
-                "target":   [x, y, z],    # in Blender units
-            },
-            "blender_units": {},           # dimensioni già convertite
+            "technique":  "UV_SPHERE | CYLINDER | LATHE | CURVE_LOOP | DISC | BOX | SCULPT | build_vessel | build_shell | state_machine",
+            "method_fallback": ["LATHE→build_shell", "build_vessel→geonodes"],  # catena fallback
+            "depends_on": [],              # parti da creare prima (Fase 1 sola)
+            "blender_units": {},           # dimensioni già convertite (×0.01)
             "features":   [],             # features geometriche da aggiungere
-            "technique_notes": "...",     # istruzioni specifiche per blender-arch
+            "technique_notes": "...",     # istruzioni specifiche per la skill esecutiva
+            # ── SOCKET DICT (Fase 2 — ASSEMBLY) ──────────────────────────
+            "sockets": {
+                # nome_socket: [x, y, z] in coordinate LOCALI di questo oggetto
+                # Compilato dalla skill esecutiva dopo la build, usato dal coordinator per assembly
+                "esempio_attach_top":    [r, 0, z_top],
+                "esempio_attach_bottom": [r, 0, z_bot],
+                "esempio_base_center":   [0, 0, 0],
+            },
         },
         # ... una fase per ogni parte
+    ],
+
+    # ── ASSEMBLY (Fase 2) — usa i socket della Fase 1 ─────────────
+    "assembly": [
+        {
+            "move":     "parte_da_spostare",
+            "socket_b": "nome_socket_su_B",   # socket locale di B
+            "onto":     "parte_di_riferimento",
+            "socket_a": "nome_socket_su_A",   # socket locale di A
+            "gap":      0.0,                  # offset aggiuntivo dopo il contatto [BU]
+        },
+        # ... un entry per ogni attacco tra parti
     ],
 
     # ── MATERIALI ──────────────────────────────────────────────────
@@ -423,15 +800,24 @@ build_plan = {
     # ── SCENA ──────────────────────────────────────────────────────
     "scene": {
         "camera":      {"location": [x,y,z], "target": [x,y,z], "lens": 85},
-        "light_preset": "small_object | furniture | architectural",
-        "world_color":  [r, g, b],
-        "world_strength": 0.3,
+        "light_preset": "small_object | small_object_white | dark_product | furniture | architectural",
+        # OPPURE (priorità su light_preset se entrambi presenti):
+        "lighting_technique": "loop | rembrandt | butterfly | split | high_key | low_key | food_side | food_window",
+        # loop=2:1 standard, rembrandt=3:1 premium, butterfly=2:1 beauty, split=8:1 dark,
+        # high_key=1:1 allegro, low_key=8:1 noir, food_side=laterale cibo, food_window=finestra cibo
+        "world_color":  [r, g, b],          # default (0.02,0.02,0.03) — quasi nero
+        "world_strength": 0.12,             # default 0.10–0.20 per product shot
+        "hdri_path": None,                  # se non None: usa setup_hdri_world() invece di colore solido
+        "hdri_strength": 0.5,               # 0.3-0.8 ibrido (key AREA domina), 1.0-2.0 HDRI puro
         "table": {
             "enabled": True,
             "color":   [r, g, b],
             "roughness": 0.6,
         },
-        "exposure":    0.0,
+        # AgX color management (default Blender 4.0+)
+        "view_transform": "AgX",            # mai "Filmic" su Blender 4+
+        "look": "AgX - Punchy",             # "AgX - Base" | "AgX - Punchy" | "AgX - High Contrast"
+        "exposure":    0.0,                 # vedi LIGHT_PRESETS per valori per preset
     },
 
     # ── NOTE GENERALI ──────────────────────────────────────────────
@@ -524,11 +910,13 @@ build_plan = {
 
     "scene": {
         "camera":       {"location":[0.26,-0.32,0.16], "target":[0,0,0.02], "lens":85},
-        "light_preset": "small_object",
-        "world_color":  [0.03, 0.03, 0.04],
-        "world_strength": 0.15,
+        "light_preset": "small_object_white",   # porcellana bianca → preset bianco
+        "world_color":  [0.02, 0.02, 0.03],
+        "world_strength": 0.12,
         "table": {"enabled":True, "color":[0.08,0.05,0.03], "roughness":0.55},
-        "exposure": -0.2,
+        "view_transform": "AgX",
+        "look": "AgX - Punchy",
+        "exposure": -0.4,
     },
 
     "notes": [
@@ -547,13 +935,27 @@ build_plan = {
 
 ## REGOLE D'ORO DEL COORDINATOR
 
-1. **Non sovrapporre responsabilità** — research cerca, coordinator pianifica, arch esegue
+### Responsabilità e pipeline
+1. **Non sovrapporre responsabilità** — research cerca, coordinator pianifica, arch/procedural eseguono
 2. **Topological sort sempre** — mai assumere l'ordine delle parti, calcolarlo
-3. **Un materiale condiviso > N materiali identici** — raggruppa prima di creare
-4. **Scala coerente** — converti tutto in Blender units (×0.01) nel build_plan, non in arch
-5. **Tecnica esplicita** — blender-arch non deve scegliere la tecnica, il coordinator la decide
-6. **Position sempre relativa** — mai coordinate assolute hardcoded, sempre relativo a una parte padre o a z=0
-7. **Note errori noti** — includi sempre le gotchas (ShaderNodeMixRGB, view_layer.update, ecc.)
-8. **Complexity gating** — se complexity=complex, suggerisci iterazioni incrementali (crea, renderizza, verifica, poi continua)
-9. **attach_to() per posizionamenti precisi** — quando due parti devono toccarsi (manico su tazza, saucer sotto cup), specifica i punti locali esatti nel build_plan e delega l'esecuzione ad attach_to(). Mai calcolare manualmente delta_z.
-10. **world_bounds() prima di ogni attach** — la posizione reale di un oggetto può differire da obj.location a causa di rotation/scale/parent. Misura sempre in world space.
+3. **Tecnica esplicita** — la skill esecutiva non sceglie la tecnica, il coordinator la decide nel build_plan
+4. **Complexity gating** — se complexity=complex, suggerisci iterazioni incrementali (crea → render → verifica → continua)
+
+### Method selection
+5. **Decision tree prima della tecnica** — verifica spine → sezione variabile → influenze globali prima di scegliere LATHE o build_vessel
+6. **Fallback chain nel build_plan** — ogni fase deve dichiarare `method_fallback` con max 2 alternative ordinate
+7. **Mai ricominciare da zero** — prima di cambiare tecnica, seguire la fallback chain diagnosticando l'artefatto
+8. **Procedural batte arch se c'è spine** — anche per oggetti "semplici" come manici curvi o tubi
+
+### Modularità e assembly
+9. **3 fasi separate** — build / assembly / material non si mescolano mai nello stesso blocco di codice
+10. **Socket dict obbligatorio** — ogni modulo espone i propri punti di attacco in coordinate locali, il coordinator li usa per l'assembly senza conoscere l'implementazione interna
+11. **Origin al bottom** — ogni modulo posiziona l'origin al bounding-box bottom prima di restituire l'oggetto
+12. **attach_to() per ogni contatto** — mai calcolare manualmente delta_z o offset tra parti; usare sempre attach_to() / attach_bounds() con i socket dict
+
+### Scala e materiali
+13. **Scala coerente** — converti tutto in Blender units (×0.01) nel build_plan, mai nella skill esecutiva
+14. **Un materiale condiviso > N identici** — raggruppa le parti per materiale nella Fase 3, non durante la build
+15. **Position sempre relativa** — mai coordinate assolute hardcoded; sempre relativo a socket_a o a z=0
+16. **world_bounds() prima di ogni attach** — obj.location ≠ posizione reale se ci sono rotation/scale/parent; misurare sempre in world space
+17. **Note gotchas sempre presenti** — ShaderNodeMixRGB→Mix, view_layer.update(), shade_smooth() su data non su ops

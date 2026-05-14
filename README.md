@@ -28,6 +28,7 @@ Everything runs **100% locally** — no cloud, no API keys beyond Claude Code it
 - ✅ Thread-safe via `bpy.app.timers` + `queue.Queue`
 - ✅ Zero external Python dependencies (stdlib only)
 - ✅ Compatible with Blender 4.x and 5.x
+- ✅ 11 modular Claude Code skills covering the full modeling pipeline
 
 ---
 
@@ -35,9 +36,11 @@ Everything runs **100% locally** — no cloud, no API keys beyond Claude Code it
 
 | Path | Description |
 |------|-------------|
-| `addon/claude_blender_addon.py` | Blender addon v3.0 — HTTP server on port 7234 |
-| `skill/SKILL.md` | Claude Code skill — modeling helpers, materials, camera presets |
-| `scripts/` | Example scripts: donut, wine bottle, house, GeoNodes fixes |
+| `claude_blender_addon.py` | Blender addon v3.0 — HTTP server on port 7234 |
+| `blender_mcp_http.py` | MCP bridge: translates MCP JSON-RPC → HTTP to port 7234 |
+| `skill/` | 11 Claude Code skills — full modeling pipeline |
+| `scripts/` | Example scripts: donut, espresso cup, wine bottle, fruit basket, bedside lamp |
+| `renders/` | Reference renders from each session |
 
 ---
 
@@ -45,11 +48,10 @@ Everything runs **100% locally** — no cloud, no API keys beyond Claude Code it
 
 ### 1 — Blender Addon
 
-1. Download [`addon/claude_blender_addon.py`](addon/claude_blender_addon.py)
-2. In Blender: `Edit > Preferences > Add-ons > Install`
-3. Select the file → enable the checkbox ✓
-4. The server starts automatically on `localhost:7234`
-5. Verify: `Properties > Scene > Claude MCP` shows **● Attivo**
+1. Copy `claude_blender_addon.py` to your Blender addons folder, or:
+2. In Blender: `Edit > Preferences > Add-ons > Install` → select the file → enable ✓
+3. The server starts automatically on `localhost:7234`
+4. Verify: `Properties > Scene > Claude MCP` shows **● Attivo**
 
 > If the server doesn't auto-start, open the Scripting tab and run:
 > ```python
@@ -57,16 +59,25 @@ Everything runs **100% locally** — no cloud, no API keys beyond Claude Code it
 > bpy.ops.claude.start_server()
 > ```
 
-### 2 — Claude Code Skill
+### 2 — Claude Code Skills
 
-Copy the skill to your Claude skills folder:
-```
-~/.claude/skills/blender-arch/SKILL.md
+Copy the skill folders to your Claude skills directory:
+
+**macOS / Linux:**
+```bash
+cp -r skill/blender-* ~/.claude/skills/
 ```
 
-Then invoke it in Claude Code with:
+**Windows:**
+```powershell
+Copy-Item -Recurse skill\blender-* C:\Users\<you>\.claude\skills\
 ```
-/blender-arch build a donut with pink icing and sprinkles
+
+Then invoke in Claude Code with:
+```
+/blender-coordinator build a bedside lamp
+/blender-arch model an espresso cup with saucer
+/blender-lighting setup rembrandt lighting for a product shot
 ```
 
 ### 3 — MCP Bridge (optional)
@@ -113,29 +124,57 @@ Assign any JSON-serialisable value to `result` to get data back.
 
 ---
 
-## Skill Capabilities (v3.0)
+## Skill Stack (11 skills)
 
-The `skill/SKILL.md` provides Claude with ready-made helpers for:
+The pipeline is split into focused, composable skills. The coordinator routes each task to the right specialist.
 
-**Modeling**
-- Box, cylinder, sphere, plane helpers
-- bmesh extrude, pipe/curve along points, lathe (revolution via `bpy.ops.mesh.spin`)
-- Modifiers: Bevel, SubSurf, Solidify, Array, Mirror, Boolean
+```
+User request
+    │
+    ▼
+blender-coordinator  ← entry point, builds the plan, routes to skills
+    ├── blender-research    ← spec_sheet from vague requests
+    ├── blender-arch        ← rigid objects, architecture, products
+    ├── blender-procedural  ← organic tubes, loft, DNA, vascular trees
+    ├── blender-sculpt      ← freeform shapes, terrain, fruit
+    ├── blender-rig         ← armatures, FK/IK, weight paint, shape keys
+    ├── blender-geonodes    ← scatter, curve-to-mesh, noise displacement
+    ├── blender-texture     ← UV, PBR materials, baking, SSS
+    ├── blender-space       ← precise positioning, attach point system
+    ├── blender-lighting    ← 3-point + named cinematic rigs, camera, world
+    └── blender-physics     ← rigid body, cloth, particles
+```
 
-**Architecture**
-- Walls with Boolean openings, window frames, railings, staircases, hip roofs
+### Skill details
 
-**Materials** — Blender 5.x accurate (OpenPBR)
-- `mat_pbr`, `mat_noise` (with `noise_type` variants), `mat_glass`
-- `mat_metal` with Coat/clearcoat layer
-- `mat_subsurface` — SSS for skin, wax, marble (RANDOM_WALK / RANDOM_WALK_SKIN)
-- `mat_fabric` — Sheen layer for velvet, linen, cotton
-- `mat_wood`, `mat_blueprint`
-- All use `surface_render_method` (replaces deprecated `blend_method`)
+| Skill | Techniques | Typical use |
+|-------|-----------|-------------|
+| `blender-coordinator` | build_plan, routing, dependency sort, socket assembly | Any complex object |
+| `blender-research` | spec_sheet: dimensions, colors, parts, materials | Vague requests ("make a lamp") |
+| `blender-arch` | CUBE/CYL/LATHE + bevel/boolean, attach_to system | Furniture, cups, architecture |
+| `blender-procedural` | Parallel Transport, build_shell/vessel, DNA, vascular | Tubes, bones, organic loft |
+| `blender-sculpt` | KDTree brush, 5 falloff kernels, noise3d, remesh | Fruit, rocks, terrain |
+| `blender-rig` | Armature, bone roll=0, IK, weight paint, shape keys | Characters, hands, eyelids |
+| `blender-geonodes` | Scatter, curve-to-mesh, noise deform via GN Python | Sprinkles, grass, cables |
+| `blender-texture` | UV unwrap, mat_pbr/noise/glass/metal/fabric, bake AO | All materials and textures |
+| `blender-space` | attach_to(), attach_bounds(), safe_place(), world_bounds() | Assembly phase |
+| `blender-lighting` | 3-point, Loop/Rembrandt/Butterfly/Split/High-Key/Low-Key, HDRI | Product shots, food, portraits |
+| `blender-physics` | Rigid body, cloth, fluid, particles | Simulations |
 
-**Camera & Lighting**
-- 8 camera presets (product, isometric, street level, interior...)
-- 3-point lighting, architectural sun+fill
+---
+
+## Named Lighting Techniques (blender-lighting)
+
+| Technique | Ratio | Best for |
+|-----------|-------|----------|
+| Loop | 2:1 | Product standard, lifestyle |
+| Rembrandt | 3:1–4:1 | Premium product, character |
+| Butterfly | 2:1–2.5:1 | Beauty, jewelry, cosmetics |
+| Split | 8:1+ | Dark product, thriller |
+| High Key | 1:1 | Advertising, happy lifestyle |
+| Low Key | 8:1+ | Spirits, horror, noir |
+| Food Side | 2:1 | Editorial food, texture |
+| Food Window | 2:1 | Lifestyle food, natural light |
 
 ---
 
@@ -153,9 +192,36 @@ def blender(code, timeout=60):
 
 # Build → render → Read PNG → analyze → fix → repeat
 blender(build_code)
-render_and_read("preview.png")  # → Read tool → visual analysis
-blender(fix_code)               # → iterate until satisfied
+render_and_read("preview.png")   # → Read tool → visual analysis
+blender(fix_code)                # → iterate until satisfied
 ```
+
+---
+
+## Blender 5.x Gotchas
+
+Critical fixes for Blender 4.x / 5.x — all skills are aware of these:
+
+| Issue | Wrong | Correct |
+|-------|-------|---------|
+| Smooth shading on bmesh | `bpy.ops.object.shade_smooth()` | `obj.data.shade_smooth()` |
+| ShaderNodeMix color blend | `inputs[1]`, `inputs[2]`, `outputs[0]` | `data_type='RGBA'`, `inputs[6]`, `inputs[7]`, `outputs[2]` |
+| EEVEE engine name | `BLENDER_EEVEE` only | `try BLENDER_EEVEE_NEXT except BLENDER_EEVEE` |
+| Cycles denoiser | `OPTIX` (crashes on some setups) | `OPENIMAGEDENOISE` as safe fallback |
+| AgX color (Blender 5.x) | `Filmic` | `AgX` + look `AgX - Punchy` |
+| matrix_world stale | read directly | `bpy.context.view_layer.update()` first |
+
+---
+
+## Example Renders
+
+| Object | Technique | Script |
+|--------|-----------|--------|
+| Donut + icing + sprinkles | GeoNodes scatter | `scripts/donut.py` |
+| Espresso cup + saucer | LATHE + attach_to | `scripts/espresso_v2.py` |
+| Wine bottle | Hybrid loft | `scripts/bottle_hybrid.py` |
+| Fruit basket | Sculpt + GeoNodes | `scripts/basket_final.py` |
+| Bedside lamp | LATHE + Rembrandt lighting | `renders/bedside_lamp_FINAL.png` |
 
 ---
 
@@ -189,7 +255,7 @@ def run_in_main(code, timeout=30.0):
 
 ## Requirements
 
-- Blender 4.0+ (tested on 5.1)
+- Blender 4.0+ (tested on 5.1.1)
 - Python 3.8+ for the bridge (stdlib only)
 - Claude Code
 
