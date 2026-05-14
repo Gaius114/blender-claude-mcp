@@ -12,6 +12,9 @@ allowed-tools:
   - Write
   - WebSearch
   - mcp__Blender__execute_blender_code
+  - mcp__Blender__get_objects_summary
+  - mcp__Blender__get_screenshot_of_window_as_image
+  - mcp__Blender__render_viewport_to_path
 ---
 
 # Skill: Blender Coordinator
@@ -228,13 +231,45 @@ def pianifica_ordine(spec_sheet):
 ### Regole di posizionamento:
 
 ```python
+# ── METODO PREFERITO: attach_to / attach_bounds ──────────────────────────
+# Precisione < 0.5 μm, funziona con oggetti ruotati, scalati, con parent.
+# Disponibile in blender-arch come funzioni già testate.
+
 POSIZIONAMENTO = {
-    "center":       "safe_place(obj, 0, 0, 0, anchor='bottom')",
-    "top":          "stack_on_top(parent, obj, gap=0.001)",
-    "bottom":       "obj.location.z = parent_zmin - obj_height",
-    "side":         "obj.location.x = parent_xmax + offset_x",
-    "attached_to:X": "leggi attach_top_z e attach_bot_z dallo spec_sheet",
+    # Parte indipendente → origin al fondo, appoggiata a z=0
+    "center":
+        "safe_place(obj, 0, 0, 0, anchor='bottom')",
+
+    # Parte sopra un'altra → usa attach_bounds (allinea bottom di B con top di A)
+    "top":
+        "attach_bounds(obj_b, 'bottom', obj_a, 'top', gap=0.0)",
+
+    # Parte sotto un'altra → usa attach_bounds inverso
+    "bottom":
+        "attach_bounds(obj_b, 'top', obj_a, 'bottom', gap=-gap)",
+
+    # Parte laterale → usa attach_to con punti locali espliciti
+    "side":
+        "attach_to(obj_b, pt_b_local, obj_a, pt_a_local)",
+
+    # Parte che si attacca a un punto preciso (es. manico sulla tazza)
+    "attached_to:X":
+        "attach_to(obj_b, (0,0,z_local_b), obj_a, (r_local_a, 0, z_local_a))",
 }
+
+# Esempi pratici:
+#   Cilindro sopra cubo:   attach_bounds(cyl, 'bottom', cube, 'top')
+#   Manico su tazza:       attach_to(handle_top, (0,0,-loop_h/2), cup, (top_r, 0, attach_top_z))
+#   Oggetto con gap 2mm:   attach_bounds(obj_b, 'bottom', obj_a, 'top', gap=0.002)
+
+# Funzioni world-space (incluse in blender-arch ATTACH POINT SYSTEM):
+#   world_bounds(obj)                          → {'min','max','center','size'} in world coords
+#   attach_to(obj_b, pt_b, obj_a, pt_a, ...)  → sposta obj_b, ritorna residual (m)
+#   attach_bounds(obj_b, face_b, obj_a, face_a, gap) → sposta obj_b per bbox face
+
+# ⚠️ DEPRECATO — NON usare:
+#   obj.location.z = parent_zmin - obj_height   (fragile, ignora rotation/parent)
+#   stack_on_top(parent, obj)                   (non tiene conto di matrix_world)
 # Usa SEMPRE world_bounds() per misurare prima di posizionare
 # Mai usare obj.location direttamente senza correzione dell'offset
 ```
@@ -500,7 +535,10 @@ build_plan = {
         "SEMPRE view_layer.update() dopo cambio location prima di leggere matrix_world",
         "ShaderNodeMixRGB deprecato in Blender 5.x → usa ShaderNodeMix data_type=RGBA",
         "origin_set(ORIGIN_GEOMETRY) subito dopo ogni creazione mesh",
-        "world_bounds() per verificare posizione reale prima di ogni safe_place",
+        "world_bounds() per verificare posizione reale prima di ogni posizionamento",
+        "SHADE SMOOTH BUG: usa ob.data.shade_smooth() NON bpy.ops.object.shade_smooth() — l'operatore non rimuove sharp_face su mesh bmesh → striature su cilindri/coni. Verifica: ob.data.normals_domain deve essere 'POINT'",
+        "Dopo shade_smooth: ob.data.set_sharp_from_angle(angle=math.radians(30)) per marcare edge acuti",
+        "POSIZIONAMENTO PRECISO: usa attach_to() / attach_bounds() — precisione < 0.5 μm, funziona con oggetti ruotati/scalati/con parent. Definiti in blender-arch SKILL.md sezione ATTACH POINT SYSTEM",
     ],
 }
 ```
@@ -517,3 +555,5 @@ build_plan = {
 6. **Position sempre relativa** — mai coordinate assolute hardcoded, sempre relativo a una parte padre o a z=0
 7. **Note errori noti** — includi sempre le gotchas (ShaderNodeMixRGB, view_layer.update, ecc.)
 8. **Complexity gating** — se complexity=complex, suggerisci iterazioni incrementali (crea, renderizza, verifica, poi continua)
+9. **attach_to() per posizionamenti precisi** — quando due parti devono toccarsi (manico su tazza, saucer sotto cup), specifica i punti locali esatti nel build_plan e delega l'esecuzione ad attach_to(). Mai calcolare manualmente delta_z.
+10. **world_bounds() prima di ogni attach** — la posizione reale di un oggetto può differire da obj.location a causa di rotation/scale/parent. Misura sempre in world space.

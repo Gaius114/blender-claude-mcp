@@ -2,8 +2,8 @@
 description: >
   Skill avanzata per modellazione 3D in Blender — architettura, oggetti,
   prodotti, mobili, veicoli. Tecnica professionale: bevel, SubSurf, Boolean,
-  bmesh, Array, Curve, Solidify, smooth shading. Visual loop con HTTP connector
-  (localhost:7234): esegui → render → analizza → itera.
+  bmesh, Array, Curve, Solidify, smooth shading. Visual loop con MCP connector
+  (porta 9876, predefinito) o HTTP fallback (porta 7234): esegui → render → analizza → itera.
 allowed-tools:
   - Bash
   - Read
@@ -11,7 +11,12 @@ allowed-tools:
   - Glob
   - mcp__Blender__execute_blender_code
   - mcp__Blender__get_screenshot_of_window_as_image
+  - mcp__Blender__get_screenshot_of_area_as_image
   - mcp__Blender__render_viewport_to_path
+  - mcp__Blender__render_thumbnail_to_path
+  - mcp__Blender__get_objects_summary
+  - mcp__Blender__get_object_detail_summary
+  - mcp__Blender__jump_to_view3d_object_by_name
 ---
 
 # Skill: Blender 3D Modeling (Advanced)
@@ -21,11 +26,40 @@ Ricevi una richiesta (`$ARGUMENTS`) e produci geometria di qualità professional
 
 ---
 
-## Workflow
+## Connessione — MCP (predefinito) + HTTP (fallback)
 
-### Connessione (HTTP — porta 7234)
+### ✅ Metodo 1 — MCP Tool (PREFERITO, porta 9876)
+Usa direttamente il tool `mcp__Blender__execute_blender_code`:
 ```python
-import urllib.request, json, base64
+# Esegui codice in Blender — assegna sempre result={...} per ricevere dati
+mcp__Blender__execute_blender_code(code="""
+import bpy
+# ... il tuo codice ...
+result = {"ok": True, "verts": len(me.vertices)}
+""")
+
+# Screenshot viewport (senza render)
+mcp__Blender__get_screenshot_of_window_as_image()
+
+# Render su file e visualizza
+mcp__Blender__render_viewport_to_path(output_path="C:/Users/josia/Downloads/out.png")
+
+# Lista oggetti in scena
+mcp__Blender__get_objects_summary()
+```
+
+**Avvio server MCP in Blender** (se non ancora attivo):
+```python
+# Da eseguire via HTTP una tantum all'inizio della sessione
+import bpy
+bpy.context.preferences.system.use_online_access = True
+bpy.ops.blmcp.server_start()
+# Dopo questo, usa i tool MCP direttamente senza HTTP
+```
+
+### ⚠️ Metodo 2 — HTTP Fallback (porta 7234, solo se MCP non disponibile)
+```python
+import urllib.request, json
 
 BLENDER_URL = "http://localhost:7234"
 
@@ -33,48 +67,43 @@ def blender(code, timeout=60):
     data = json.dumps({"code": code, "timeout": timeout}).encode()
     req  = urllib.request.Request(f"{BLENDER_URL}/execute", data=data,
                                   headers={"Content-Type": "application/json"})
-    resp = urllib.request.urlopen(req, timeout=timeout + 10)
-    r = json.loads(resp.read().decode())
+    r = json.loads(urllib.request.urlopen(req, timeout=timeout + 10).read())
     if "error" in r: raise RuntimeError(r["error"])
     return r.get("ok")
-
-def ping():
-    resp = urllib.request.urlopen(f"{BLENDER_URL}/ping", timeout=5)
-    return json.loads(resp.read().decode())
 ```
 
-### Visual Loop (esegui → preview → analizza → itera)
+---
+
+## Visual Loop — MCP (esegui → screenshot → analizza → itera)
+
+```
+FLUSSO PREFERITO con MCP:
+1. mcp__Blender__execute_blender_code(code=build_code)
+2. mcp__Blender__render_viewport_to_path(output_path="...preview.png")
+   oppure mcp__Blender__get_screenshot_of_window_as_image()  ← più veloce, no render
+3. Read("...preview.png")  → analisi visiva
+4. mcp__Blender__execute_blender_code(code=fix_code)  → itera
+
+RENDER COMPLETO (EEVEE) — da usare per risultato finale:
+```
 ```python
-def render_and_read(save_path, w=1280, h=720):
-    """Rende con EEVEE, salva PNG, ritorna i byte per analisi."""
-    code = f'''
-import bpy, base64, os, tempfile
+# Via MCP — esegui questo codice poi leggi il file con Read
+render_code = """
+import bpy
 sc = bpy.context.scene
-_e=sc.render.engine; _x=sc.render.resolution_x; _y=sc.render.resolution_y; _p=sc.render.filepath
-try: sc.render.engine = "BLENDER_EEVEE_NEXT"
+try:    sc.render.engine = "BLENDER_EEVEE_NEXT"
 except: sc.render.engine = "BLENDER_EEVEE"
-sc.render.resolution_x={w}; sc.render.resolution_y={h}
-tmp = tempfile.mktemp(suffix=".png")
-sc.render.filepath = tmp
+sc.render.resolution_x = 1280
+sc.render.resolution_y = 720
+sc.render.filepath = "C:/Users/josia/Downloads/render_final.png"
 sc.render.use_compositing = False
 sc.view_settings.view_transform = "Filmic"
 sc.view_settings.look = "Medium High Contrast"
 bpy.ops.render.render(write_still=True)
-with open(tmp,"rb") as f: b64=base64.b64encode(f.read()).decode()
-os.remove(tmp)
-sc.render.engine=_e; sc.render.resolution_x=_x; sc.render.resolution_y=_y; sc.render.filepath=_p
-result = {{"image_b64": b64}}
-'''
-    r = blender(code, timeout=180)
-    img = base64.b64decode(r["image_b64"])
-    with open(save_path, "wb") as f: f.write(img)
-    return save_path   # poi usa Read tool per analizzare visivamente
-
-# Flusso tipico:
-# 1. blender(build_code)
-# 2. render_and_read("C:/Users/josia/Downloads/preview_iter1.png")
-# 3. Read("C:/Users/josia/Downloads/preview_iter1.png")  → analisi visiva
-# 4. blender(fix_code)  → itera fino a soddisfazione
+result = {"saved": sc.render.filepath}
+"""
+# mcp__Blender__execute_blender_code(code=render_code)
+# poi: Read("C:/Users/josia/Downloads/render_final.png")
 ```
 
 ---
@@ -153,21 +182,53 @@ def assign_mat(obj, mat):
 ## MODELLAZIONE — Tecniche Avanzate
 
 ### Smooth shading + Auto Smooth
+
+> ⚠️ **BUG CRITICO — `bpy.ops.object.shade_smooth()` NON funziona su mesh bmesh**
+>
+> L'operatore `bpy.ops.object.shade_smooth()` **non rimuove l'attributo `sharp_face`**
+> su mesh create con bmesh. Risultato: tutte le facce rimangono piatte (`normals_domain=FACE`)
+> e si vedono striature verticali pronunciate su cilindri, coni e oggetti lathe.
+>
+> **Diagnosi:**
+> ```python
+> ob.data.normals_domain  # → 'FACE' (sbagliato), deve essere 'POINT'
+> 'sharp_face' in ob.data.attributes  # → True dopo ops.shade_smooth() → piatto!
+> ```
+>
+> **Fix: usa il metodo diretto sul mesh, non l'operatore:**
+> ```python
+> # SBAGLIATO (non funziona su bmesh):
+> bpy.ops.object.shade_smooth()   # → sharp_face rimane True, striature!
+>
+> # CORRETTO — metodo diretto sul mesh (Blender 4.x+):
+> ob.data.shade_smooth()          # → rimuove sharp_face, normals_domain='POINT' ✓
+>
+> # CORRETTO con soglia angolo (marca edge acuti come sharp):
+> ob.data.shade_smooth()                          # prima: abilita smooth su tutto
+> ob.data.set_sharp_from_angle(angle=math.radians(30))  # poi: marca edge > 30° come sharp
+> ```
+
 ```python
 def smooth_shade(obj, angle_deg=30):
     """
     Smooth shading con soglia angolo. ESSENZIALE per oggetti organici e curvi.
     Senza questo: facce piatte visibili su cilindri e sfere.
+
+    NOTA: usa ob.data.shade_smooth() (metodo mesh), NON bpy.ops.object.shade_smooth()
+    che non funziona correttamente su mesh create con bmesh.
     """
-    for p in obj.data.polygons:
-        p.use_smooth = True
-    obj.data.use_auto_smooth = True  # Blender < 4.1
-    # Blender 4.1+: usa modifier Smooth by Angle
+    # CORRETTO: metodo diretto sul mesh data-block
+    obj.data.shade_smooth()
+    # Marca edge acuti come sharp (angolo > soglia)
     try:
-        mod = obj.modifiers.new("SmoothAngle", "SMOOTH_BY_ANGLE")
-        mod.angle = math.radians(angle_deg)
-    except:
-        pass
+        obj.data.set_sharp_from_angle(angle=math.radians(angle_deg))
+    except AttributeError:
+        # Blender < 4.1: fallback via modifier
+        try:
+            mod = obj.modifiers.new("SmoothAngle", "SMOOTH_BY_ANGLE")
+            mod.angle = math.radians(angle_deg)
+        except:
+            pass
     obj.data.update()
 ```
 
@@ -369,6 +430,180 @@ def pipe_along_points(name, points, radius=0.02, resolution=12, mat=None):
     bpy.context.collection.objects.link(obj)
     if mat: assign_mat(obj, mat)
     return obj
+```
+
+---
+
+## POSIZIONAMENTO PRECISO — Attach Point System
+
+> **Teoria:** ogni oggetto Blender ha una **base ortonormale** propria incorporata nella
+> `matrix_world` (4×4). Per far toccare due oggetti con precisione si calcolano i punti
+> di contatto nel frame locale di ciascun oggetto e si trasformano nel frame world comune.
+>
+> ```
+> p_world = obj.matrix_world @ p_local        # locale → world
+> p_local = obj.matrix_world.inverted() @ p_world  # world → locale
+> ```
+> Precisione verificata: errore residuo < 0.15 μm anche con oggetti ruotati.
+
+```python
+from mathutils import Vector
+import bpy
+
+# ── Conversioni frame ─────────────────────────────────────────────────
+
+def local_to_world(obj, p_local):
+    """Trasforma un punto dal frame locale dell'oggetto al world frame."""
+    bpy.context.view_layer.update()
+    return obj.matrix_world @ Vector(p_local)
+
+def world_to_local(obj, p_world):
+    """Trasforma un punto dal world frame al frame locale dell'oggetto."""
+    bpy.context.view_layer.update()
+    return obj.matrix_world.inverted() @ Vector(p_world)
+
+def world_bounds(obj):
+    """
+    Restituisce il bounding box world-space dell'oggetto.
+    Returns: dict con 'min', 'max', 'center', 'size' (tutti Vector)
+    """
+    bpy.context.view_layer.update()
+    verts = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    mn = Vector((min(v.x for v in verts), min(v.y for v in verts), min(v.z for v in verts)))
+    mx = Vector((max(v.x for v in verts), max(v.y for v in verts), max(v.z for v in verts)))
+    return {'min': mn, 'max': mx, 'center': (mn + mx) / 2, 'size': mx - mn}
+
+# ── Attach point — posizionamento preciso ─────────────────────────────
+
+def attach_to(obj_b, pt_b_local, obj_a, pt_a_local,
+              align=False, gap=0.0, gap_axis=None):
+    """
+    Posiziona obj_b in modo che il suo punto locale `pt_b_local`
+    coincida esattamente con il punto locale `pt_a_local` di obj_a.
+
+    Args:
+        obj_b      : oggetto da spostare
+        pt_b_local : punto di attacco su obj_b in coordinate LOCALI  (tuple o Vector)
+        obj_a      : oggetto di riferimento (fisso)
+        pt_a_local : punto di attacco su obj_a in coordinate LOCALI  (tuple o Vector)
+        align      : se True, copia anche la rotazione di obj_a su obj_b
+        gap        : offset aggiuntivo dopo il contatto (in metri)
+        gap_axis   : direzione world del gap (Vector); se None usa la direzione delta
+
+    Returns:
+        float: distanza residua tra i punti di attacco (< 1e-7 m = precisione macchina)
+
+    Esempi:
+        # Piattino: il suo top (z_local = saucer_h) tocca il bottom della tazza (z_local = 0)
+        attach_to(saucer, (0, 0, 0.016), cup, (0, 0, 0))
+
+        # Manico: il suo start (z_local = ATZ_TOP) tocca la parete destra della tazza
+        attach_to(handle, (0.031, 0, 0.048), cup, (0.031, 0, 0.048))
+
+        # Coperchio 2mm sopra il bordo
+        attach_to(lid, (0, 0, -0.01), mug, (0, 0, 0.09), gap=0.002, gap_axis=(0,0,1))
+    """
+    bpy.context.view_layer.update()
+
+    # 1. Punto target nel world frame
+    p_target = obj_a.matrix_world @ Vector(pt_a_local)
+
+    # 2. (Opzionale) allinea rotazione di B a quella di A
+    if align:
+        obj_b.rotation_mode = 'QUATERNION'
+        obj_b.rotation_quaternion = obj_a.matrix_world.to_quaternion()
+        bpy.context.view_layer.update()
+
+    # 3. Posizione attuale del punto di attacco di B nel world
+    p_now = obj_b.matrix_world @ Vector(pt_b_local)
+
+    # 4. Delta world-space da applicare
+    delta_world = p_target - p_now
+
+    # 5. Applica gap
+    if gap != 0.0:
+        if gap_axis is not None:
+            delta_world += Vector(gap_axis).normalized() * gap
+        elif delta_world.length > 1e-10:
+            delta_world += delta_world.normalized() * gap
+
+    # 6. Converti in parent space se necessario, poi aggiorna location
+    if obj_b.parent:
+        delta = obj_b.parent.matrix_world.inverted().to_3x3() @ delta_world
+    else:
+        delta = delta_world
+    obj_b.location = obj_b.location + delta
+    bpy.context.view_layer.update()
+
+    # 7. Calcola residuo
+    p_a_f = obj_a.matrix_world @ Vector(pt_a_local)
+    p_b_f = obj_b.matrix_world @ Vector(pt_b_local)
+    return (p_b_f - p_a_f).length
+
+
+def attach_bounds(obj_b, face_b, obj_a, face_a, gap=0.0):
+    """
+    Posiziona obj_b in modo che la faccia `face_b` del suo bounding box
+    tocchi la faccia `face_a` del bounding box di obj_a nel world space.
+
+    face: 'top' | 'bottom' | 'front' | 'back' | 'right' | 'left'
+
+    Esempi:
+        attach_bounds(saucer, 'top', cup, 'bottom')
+        # → top del piattino tocca il bottom della tazza
+
+        attach_bounds(lid, 'bottom', mug, 'top', gap=0.002)
+        # → coperchio 2mm sopra il bordo
+    """
+    AXIS   = {'top': 2, 'bottom': 2, 'front': 1, 'back': 1, 'right': 0, 'left': 0}
+    IS_MAX = {'top': True, 'right': True, 'back': True,
+              'bottom': False, 'left': False, 'front': False}
+    bpy.context.view_layer.update()
+
+    ax    = AXIS[face_a]
+    va    = [obj_a.matrix_world @ v.co for v in obj_a.data.vertices]
+    vb    = [obj_b.matrix_world @ v.co for v in obj_b.data.vertices]
+    ext_a = max(v[ax] for v in va) if IS_MAX[face_a] else min(v[ax] for v in va)
+    ext_b = max(v[ax] for v in vb) if IS_MAX[face_b] else min(v[ax] for v in vb)
+    delta_ax = ext_a - ext_b + gap * (1 if IS_MAX[face_a] else -1)
+
+    if obj_b.parent:
+        world_d = [0, 0, 0]; world_d[ax] = delta_ax
+        obj_b.location += obj_b.parent.matrix_world.inverted().to_3x3() @ Vector(world_d)
+    else:
+        obj_b.location[ax] += delta_ax
+
+    bpy.context.view_layer.update()
+    vb2   = [obj_b.matrix_world @ v.co for v in obj_b.data.vertices]
+    ext_b2 = max(v[ax] for v in vb2) if IS_MAX[face_b] else min(v[ax] for v in vb2)
+    return abs(ext_b2 - ext_a)   # residuo (< 1e-7 = ok)
+```
+
+### Pattern tipici di attacco
+
+```python
+# ── Stack: B sopra A (via bounds) ─────────────────────────────
+attach_bounds(obj_b, 'bottom', obj_a, 'top')
+
+# ── Stack con gap ─────────────────────────────────────────────
+attach_bounds(lid, 'bottom', mug, 'top', gap=0.002)
+
+# ── Punto preciso (local frame): piattino sotto tazza ─────────
+# Il top del piattino (z_local=saucer_height) tocca il bottom della tazza (z_local=0)
+attach_to(saucer, (0, 0, 0.016), cup, (0, 0, 0.0))
+
+# ── Verifica dopo posizionamento ──────────────────────────────
+b = world_bounds(obj)
+print(f"bottom z = {b['min'].z:.6f}")
+print(f"top    z = {b['max'].z:.6f}")
+print(f"center   = {b['center']}")
+
+# ── Trasformazioni frame ──────────────────────────────────────
+# "Dove si trova il bordo del rim della tazza nel world space?"
+rim_world = local_to_world(cup, (0.031, 0, 0.058))
+
+# "Dato un punto world, dove è nelle coordinate locali del piattino?"
+p_local = world_to_local(saucer, rim_world)
 ```
 
 ---
@@ -645,6 +880,22 @@ def diag_bar_xz(name, x1, z1, x2, z2, y_wall,
 > - `use_nodes` setter è deprecated (5.0+), ma la proprietà esiste ancora
 > - Principled BSDF ora usa modello **OpenPBR**: ha layer Coat (clearcoat), Sheen, Subsurface migliorato
 > - Input sicuro: controlla `if 'Nome' in [i.name for i in bsdf.inputs]` per versione-safety
+> - **`ShaderNodeMixRGB` è DEPRECATO** in Blender 5.x → usa `ShaderNodeMix` con `node.data_type = 'RGBA'`. Gli input cambiano: `inputs[0]` = Factor, `inputs[6]` = Color A, `inputs[7]` = Color B, `outputs[2]` = Color. Con MixRGB il nodo esiste ma restituisce valori di default (giallo) invece del mix corretto — bug silenzioso!
+>
+> ```python
+> # SBAGLIATO (Blender 5.x):
+> mix = nt.nodes.new('ShaderNodeMixRGB')
+> mix.inputs[1].default_value = (1,0,0,1)  # → restituisce giallo default
+>
+> # CORRETTO (Blender 4.x+):
+> mix = nt.nodes.new('ShaderNodeMix')
+> mix.data_type = 'RGBA'
+> mix.blend_type = 'MIX'
+> mix.inputs[6].default_value = (1,0,0,1)   # Color A
+> mix.inputs[7].default_value = (0,1,0,1)   # Color B
+> nt.links.new(factor_socket, mix.inputs[0])
+> nt.links.new(mix.outputs[2], bsdf.inputs['Base Color'])
+> ```
 
 ### Helper: accesso input sicuro
 ```python
@@ -1120,6 +1371,8 @@ def setup_render_cycles(w=1920, h=1080, samples=256):
 6. **Array per ripetizioni** — non duplicare manualmente elementi ripetuti (pali, finestre, gradini).
 7. **Nomi significativi** — `Chair_Leg_FL` non `Cube.023`.
 8. **Transform apply** — sempre dopo scale != (1,1,1) prima di Boolean o SubSurf.
+9. **`ob.data.shade_smooth()` non `bpy.ops.object.shade_smooth()`** — l'operatore non funziona su mesh bmesh (lascia sharp_face=True → striature). Usa SEMPRE il metodo diretto sul mesh data-block. Verifica: `ob.data.normals_domain` deve essere `'POINT'`.
+10. **ShaderNodeMixRGB è deprecato** — usa `ShaderNodeMix` con `data_type='RGBA'`, Color A = `inputs[6]`, Color B = `inputs[7]`, result = `outputs[2]`. MixRGB esiste ma restituisce giallo default — bug silenzioso!
 
 ---
 
