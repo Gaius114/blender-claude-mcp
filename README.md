@@ -39,6 +39,7 @@ Everything runs **100% locally** — no cloud, no API keys beyond Claude Code it
 | `claude_blender_addon.py` | Blender addon v3.0 — HTTP server on port 7234 |
 | `blender_mcp_http.py` | MCP bridge: translates MCP JSON-RPC → HTTP to port 7234 |
 | `skill/` | 11 Claude Code skills — full modeling pipeline |
+| `kernel/` | Panel/seam composition kernel + plan & interface validators (pure Python, self-validating) |
 | `scripts/` | Example scripts: donut, espresso cup, wine bottle, fruit basket, bedside lamp |
 | `renders/` | Reference renders from each session |
 
@@ -163,6 +164,31 @@ blender-coordinator  ← entry point, builds the plan, routes to skills
 
 ---
 
+## Panel/Seam Kernel — Two-Gate Pipeline
+
+`kernel/` formalizes how **panelized, seamed objects** (footwear, bags,
+upholstery, shells) are built — the failure mode of one-shot loft/boolean
+modeling (the "sock blob") is eliminated *by construction*, not by discipline.
+
+**Model (validated with objective metrics):** local authoring + **rigid
+SE(3) placement** + cuts as **shared connectors** (`SeamCurve` 1-D,
+`JunctionPoint` 0-D) + an **anti-drift frame field** for curvature. A
+complex shape *emerges* from composing simple curved pieces, never one shot.
+
+| Module | Role |
+|--------|------|
+| `kernel/derive_interfaces.py` | Typed adjacency graph → real interfaces via an S1×S2 concordance rule (junctions derived from 3-cliques) |
+| `kernel/plan_validator.py` | Decomposition gate: 6 hard rules catch bad plans **before any geometry** |
+| `kernel/assembly_kernel.py` | Geometry: `Frame`, `parallel_transport`, `Assembly` (`panel_on_master`, `swept_piece`, `validate`) |
+
+**Two-gate pipeline** (enforced by `blender-coordinator` STEP 5b +
+`blender-arch`): `derive` → **plan gate** (`plan_validator.validate`,
+sound decomposition) → build → **geometry gate** (`Assembly.validate`:
+1 component / 0 non-manifold). Each module ships a `selftest()` — the
+proof travels with the code.
+
+---
+
 ## Named Lighting Techniques (blender-lighting)
 
 | Technique | Ratio | Best for |
@@ -206,7 +232,7 @@ Critical fixes for Blender 4.x / 5.x — all skills are aware of these:
 |-------|-------|---------|
 | Smooth shading on bmesh | `bpy.ops.object.shade_smooth()` | `obj.data.shade_smooth()` |
 | ShaderNodeMix color blend | `inputs[1]`, `inputs[2]`, `outputs[0]` | `data_type='RGBA'`, `inputs[6]`, `inputs[7]`, `outputs[2]` |
-| EEVEE engine name | `BLENDER_EEVEE` only | `try BLENDER_EEVEE_NEXT except BLENDER_EEVEE` |
+| EEVEE engine name | hardcode `BLENDER_EEVEE_NEXT` (raises on 5.1 → only `BLENDER_EEVEE` exists) | `BLENDER_EEVEE` on 5.1; `try BLENDER_EEVEE_NEXT except BLENDER_EEVEE` for 4.2–4.x |
 | Cycles denoiser | `OPTIX` (crashes on some setups) | `OPENIMAGEDENOISE` as safe fallback |
 | AgX color (Blender 5.x) | `Filmic` | `AgX` + look `AgX - Punchy` |
 | matrix_world stale | read directly | `bpy.context.view_layer.update()` first |
