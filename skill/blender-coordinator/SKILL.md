@@ -62,6 +62,7 @@ UTENTE: "voglio creare X"
 | Tipo di geometria / richiesta | Skill da invocare |
 |-------------------------------|-------------------|
 | Oggetti rigidi, architettura, mobili, prodotti | **blender-arch** |
+| Oggetto manifatturiero **panelizzato + cuciture** (scarpa, stivale, borsa, imbottito, scocca, guanto) | **blender-arch** → `assembly_kernel` |
 | Strutture biologiche (cuore, vasi, DNA) | **blender-procedural** |
 | Tubi, cavi, pipe lungo una curva 3D | **blender-procedural** |
 | Eliche, strutture ripetitive su spine | **blender-procedural** |
@@ -212,6 +213,7 @@ build_shell  build_vessel              arch / lathe    sculpt
 | Spine + waypoint discreti (bambù, tubatura) | state_machine + fillet | procedural |
 | Biforcazioni / albero vascolare | grafo (MST) + build_vessel | procedural |
 | Box/cylinder/cone con modificatori | CUBE/CYL + bevel/boolean | arch |
+| Oggetto fatto di **pannelli cuciti** (calzatura, borsa, imbottito, scocca) | `assembly_kernel`: pannelli su master/last + **SeamCurve/JunctionPoint condivisi** | arch |
 | Forma libera senza asse (frutta, roccia) | UV_SPHERE + sculpt | sculpt |
 | Ripetizione su superficie | scatter / array | geonodes |
 | Deformazione animata | armature + skin | rig |
@@ -223,8 +225,19 @@ build_shell  build_vessel              arch / lathe    sculpt
 2. Animazione richiesta?   → rig batte tutto il resto
 3. Forma organica pura?    → sculpt batte arch
 4. Scatter/ripetizione?    → geonodes batte arch (array)
-5. Default (forma rigida)  → arch
+5. PANELIZZATO + cuciture? → arch via assembly_kernel  [GATED, vedi sotto]
+6. Default (forma rigida)  → arch
 ```
+
+> **Gate regola 5 — quando (e SOLO quando) usare `assembly_kernel`:**
+> l'oggetto è *costruito da pannelli piatti/curvi uniti da cuciture*
+> (calzature, borse, imbottiti, scocche, guanti). NON è una forma organica
+> a superficie unica (→ sculpt/procedural) né una primitiva con modificatori
+> (→ arch normale) né un tubo a spine (→ procedural). Se panelizzato+cuciture:
+> blender-arch DEVE usare il paradigma `assembly_kernel` (pannelli su un
+> master/last + `SeamCurve`/`JunctionPoint` **condivisi**), **MAI** un loft
+> o boolean singolo "tutto in uno" — è la causa-radice del fallimento
+> "calzino" (vedi sezione dedicata in blender-arch).
 
 ---
 
